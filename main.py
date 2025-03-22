@@ -21,14 +21,14 @@ def install_wordpress(domain: str):
         print(f"Domain {domain} already installed.")
         return
     
-    # Run commands as www-data to avoid permission issues
-    subprocess.run(f"sudo -u www-data mkdir -p {domain_path}", shell=True)
-    subprocess.run(f"wget https://wordpress.org/latest.tar.gz -P {domain_path}", shell=True)
-    subprocess.run(f"tar -xzf {domain_path}/latest.tar.gz -C {domain_path} --strip-components=1", shell=True)
-    subprocess.run(f"rm {domain_path}/latest.tar.gz", shell=True)
+    # Run commands as www-data for WordPress files
+    subprocess.run(f"sudo -u www-data mkdir -p {domain_path}", shell=True, check=True)
+    subprocess.run(f"wget https://wordpress.org/latest.tar.gz -P {domain_path}", shell=True, check=True)
+    subprocess.run(f"tar -xzf {domain_path}/latest.tar.gz -C {domain_path} --strip-components=1", shell=True, check=True)
+    subprocess.run(f"rm {domain_path}/latest.tar.gz", shell=True, check=True)
     
-    subprocess.run(f"sudo chown -R www-data:www-data {domain_path}", shell=True)
-    subprocess.run(f"sudo chmod -R 755 {domain_path}", shell=True)
+    subprocess.run(f"sudo chown -R www-data:www-data {domain_path}", shell=True, check=True)
+    subprocess.run(f"sudo chmod -R 755 {domain_path}", shell=True, check=True)
     
     nginx_conf = f"""
     server {{
@@ -52,18 +52,19 @@ def install_wordpress(domain: str):
     """
     
     conf_file = f"{NGINX_CONFIG_PATH}{domain}"
-    with open(conf_file, "w") as f:
-        f.write(nginx_conf)
+    # Write Nginx config with sudo
+    subprocess.run(f"echo '{nginx_conf}' | sudo tee {conf_file} > /dev/null", shell=True, check=True)
     
-    subprocess.run(f"sudo ln -s {conf_file} {NGINX_ENABLED_PATH}{domain}", shell=True)
-    subprocess.run("sudo systemctl restart nginx", shell=True)
+    # Create symlink and restart Nginx with sudo
+    subprocess.run(f"sudo ln -sf {conf_file} {NGINX_ENABLED_PATH}{domain}", shell=True, check=True)
+    subprocess.run("sudo systemctl restart nginx", shell=True, check=True)
     print(f"✅ WordPress installed at {domain}")
 
 # Function to install SSL (separate)
 def install_ssl(domain: str):
-    subprocess.run(f"sudo certbot --nginx -d {domain} --non-interactive --agree-tos -m admin@{domain}", shell=True)
-    subprocess.run("sudo systemctl restart nginx", shell=True)
-    print(f"✅ SSL installed for {domain}")
+    subprocess.run(f"sudo certbot --nginx -d {domain} --non-interactive --agree-tos -m admin@{domain}", shell=True, check=True)
+    subprocess.run("sudo systemctl restart nginx", shell=True, check=True)
+    print(f"✅ SSLcollected for {domain}")
 
 # API Endpoint for WordPress Installation
 @app.post("/install/")
@@ -79,7 +80,7 @@ async def install_domain(request: Request, install_data: InstallRequest):
 # API Endpoint for SSL Installation
 @app.post("/install_ssl/")
 async def install_ssl_endpoint(request: Request, install_data: InstallRequest):
-    if "lumentrade.us" not in request.headers.get("referer", ""):
+    if "globalform.us" not in request.headers.get("referer", ""):
         raise HTTPException(status_code=403, detail="Access Denied")
     
     domain = install_data.domain
@@ -128,7 +129,7 @@ async def serve_vue_ui(request: Request):
                 try {
                     let response = await fetch('/install/', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Referer': 'https://lumentrade.us' },
+                        headers: { 'Content-Type': 'application/json', 'Referer': 'https://globalform.us' },
                         body: JSON.stringify({ domain })
                     });
                     let data = await response.json();
@@ -154,7 +155,7 @@ async def serve_vue_ui(request: Request):
                 try {
                     let response = await fetch('/install_ssl/', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Referer': 'https://lumentrade.us' },
+                        headers: { 'Content-Type': 'application/json', 'Referer': 'https://globalform.us' },
                         body: JSON.stringify({ domain })
                     });
                     let data = await response.json();
