@@ -71,7 +71,7 @@ async def install_domain(request: Request, domain: str):
 async def serve_vue_ui(request: Request):
     referer = request.headers.get("referer", "")
     
-    if "globaltrade.us" not in referer:
+    if "globalform.us" not in referer and "globalform.us" not in referer:
         raise HTTPException(status_code=403, detail="Access Denied")
 
     vue_template = """
