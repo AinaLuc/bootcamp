@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import subprocess
 import os
-from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -10,7 +10,10 @@ WORDPRESS_DIR = "/var/www/"
 NGINX_CONFIG_PATH = "/etc/nginx/sites-available/"
 NGINX_ENABLED_PATH = "/etc/nginx/sites-enabled/"
 
-# 🟢 Function to Install WordPress, Nginx, and SSL
+class InstallRequest(BaseModel):
+    domain: str
+
+# Function to install WordPress (without SSL)
 def install_wordpress(domain: str):
     domain_path = f"{WORDPRESS_DIR}{domain}"
     
@@ -18,13 +21,14 @@ def install_wordpress(domain: str):
         print(f"Domain {domain} already installed.")
         return
     
-    os.makedirs(domain_path, exist_ok=True)
+    # Run commands as www-data to avoid permission issues
+    subprocess.run(f"sudo -u www-data mkdir -p {domain_path}", shell=True)
     subprocess.run(f"wget https://wordpress.org/latest.tar.gz -P {domain_path}", shell=True)
     subprocess.run(f"tar -xzf {domain_path}/latest.tar.gz -C {domain_path} --strip-components=1", shell=True)
     subprocess.run(f"rm {domain_path}/latest.tar.gz", shell=True)
     
-    subprocess.run(f"chown -R www-data:www-data {domain_path}", shell=True)
-    subprocess.run(f"chmod -R 755 {domain_path}", shell=True)
+    subprocess.run(f"sudo chown -R www-data:www-data {domain_path}", shell=True)
+    subprocess.run(f"sudo chmod -R 755 {domain_path}", shell=True)
     
     nginx_conf = f"""
     server {{
@@ -51,31 +55,45 @@ def install_wordpress(domain: str):
     with open(conf_file, "w") as f:
         f.write(nginx_conf)
     
-    subprocess.run(f"ln -s {conf_file} {NGINX_ENABLED_PATH}{domain}", shell=True)
-    subprocess.run("systemctl restart nginx", shell=True)
-    subprocess.run(f"certbot --nginx -d {domain} --non-interactive --agree-tos -m admin@{domain}", shell=True)
-
+    subprocess.run(f"sudo ln -s {conf_file} {NGINX_ENABLED_PATH}{domain}", shell=True)
+    subprocess.run("sudo systemctl restart nginx", shell=True)
     print(f"✅ WordPress installed at {domain}")
 
-class InstallRequest(BaseModel):
-    domain: str
+# Function to install SSL (separate)
+def install_ssl(domain: str):
+    subprocess.run(f"sudo certbot --nginx -d {domain} --non-interactive --agree-tos -m admin@{domain}", shell=True)
+    subprocess.run("sudo systemctl restart nginx", shell=True)
+    print(f"✅ SSL installed for {domain}")
 
+# API Endpoint for WordPress Installation
 @app.post("/install/")
 async def install_domain(request: Request, install_data: InstallRequest):
-    if "globalform.us" not in request.headers.get("referer", ""):
+    if "lumentrade.us" not in request.headers.get("referer", ""):
         raise HTTPException(status_code=403, detail="Access Denied")
+    
     domain = install_data.domain
-
     install_wordpress(domain)
     
-    return {"message": "Installation completed", "setup_url": f"https://{domain}/wp-admin/install.php"}
+    return {"message": "WordPress Installation completed", "setup_url": f"http://{domain}/wp-admin/install.php"}
 
-# 🟢 Serve Vue.js Interface Only to Requests from lumentrade.us
+# API Endpoint for SSL Installation
+@app.post("/install_ssl/")
+async def install_ssl_endpoint(request: Request, install_data: InstallRequest):
+    if "lumentrade.us" not in request.headers.get("referer", ""):
+        raise HTTPException(status_code=403, detail="Access Denied")
+    
+    domain = install_data.domain
+    install_ssl(domain)
+    
+    return {"message": "SSL Installation completed", "setup_url": f"https://{domain}/wp-admin/install.php"}
+
+# Serve Vue.js Interface
 @app.get("/site", response_class=HTMLResponse)
 async def serve_vue_ui(request: Request):
     referer = request.headers.get("referer", "")
+    allowed_domains = ["globaltrade.us", "globalform.us"]
     
-    if "globalform.us" not in referer and "globalform.us" not in referer:
+    if not any(domain in referer for domain in allowed_domains):
         raise HTTPException(status_code=403, detail="Access Denied")
 
     vue_template = """
@@ -88,14 +106,15 @@ async def serve_vue_ui(request: Request):
         <style>
             body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
             input { padding: 10px; width: 300px; margin-bottom: 10px; }
-            button { padding: 10px; background-color: blue; color: white; border: none; cursor: pointer; }
+            button { padding: 10px; background-color: blue; color: white; border: none; cursor: pointer; margin: 5px; }
             .error { color: red; }
         </style>
     </head>
     <body>
         <h2>Install WordPress</h2>
         <input id="domain" placeholder="Enter domain (e.g. example.com)" />
-        <button onclick="installWordPress()">Install</button>
+        <button onclick="installWordPress()">Install WordPress</button>
+        <button onclick="installSSL()" disabled id="sslButton">Install SSL</button>
         <p id="message"></p>
 
         <script>
@@ -116,11 +135,37 @@ async def serve_vue_ui(request: Request):
                     
                     if (response.ok) {
                         document.getElementById('message').innerHTML = "✅ WordPress Installed! <a href='" + data.setup_url + "' target='_blank'>Setup Here</a>";
+                        document.getElementById('sslButton').disabled = false; // Enable SSL button
                     } else {
-                        document.getElementById('message').innerText = data.detail;
+                        document.getElementById('message').innerText = data.detail || "Error installing WordPress";
                     }
                 } catch (error) {
                     document.getElementById('message').innerText = "Error installing WordPress";
+                }
+            }
+
+            async function installSSL() {
+                const domain = document.getElementById('domain').value;
+                if (!domain) {
+                    document.getElementById('message').innerText = "Enter a domain!";
+                    return;
+                }
+                
+                try {
+                    let response = await fetch('/install_ssl/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Referer': 'https://lumentrade.us' },
+                        body: JSON.stringify({ domain })
+                    });
+                    let data = await response.json();
+                    
+                    if (response.ok) {
+                        document.getElementById('message').innerHTML = "✅ SSL Installed! <a href='" + data.setup_url + "' target='_blank'>Setup Here</a>";
+                    } else {
+                        document.getElementById('message').innerText = data.detail || "Error installing SSL";
+                    }
+                } catch (error) {
+                    document.getElementById('message').innerText = "Error installing SSL";
                 }
             }
         </script>
