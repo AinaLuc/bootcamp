@@ -13,7 +13,6 @@ NGINX_ENABLED_PATH = "/etc/nginx/sites-enabled/"
 class InstallRequest(BaseModel):
     domain: str
 
-# Function to install WordPress (without SSL)
 def install_wordpress(domain: str):
     domain_path = f"{WORDPRESS_DIR}{domain}"
     
@@ -21,8 +20,8 @@ def install_wordpress(domain: str):
         print(f"Domain {domain} already installed.")
         return
     
-    # Run commands as www-data for WordPress files
-    subprocess.run(f"sudo -u www-data mkdir -p {domain_path}", shell=True, check=True)
+    # Create directory as root
+    subprocess.run(f"sudo mkdir -p {domain_path}", shell=True, check=True)
     subprocess.run(f"wget https://wordpress.org/latest.tar.gz -P {domain_path}", shell=True, check=True)
     subprocess.run(f"tar -xzf {domain_path}/latest.tar.gz -C {domain_path} --strip-components=1", shell=True, check=True)
     subprocess.run(f"rm {domain_path}/latest.tar.gz", shell=True, check=True)
@@ -52,21 +51,17 @@ def install_wordpress(domain: str):
     """
     
     conf_file = f"{NGINX_CONFIG_PATH}{domain}"
-    # Write Nginx config with sudo
     subprocess.run(f"echo '{nginx_conf}' | sudo tee {conf_file} > /dev/null", shell=True, check=True)
     
-    # Create symlink and restart Nginx with sudo
     subprocess.run(f"sudo ln -sf {conf_file} {NGINX_ENABLED_PATH}{domain}", shell=True, check=True)
     subprocess.run("sudo systemctl restart nginx", shell=True, check=True)
     print(f"✅ WordPress installed at {domain}")
 
-# Function to install SSL (separate)
 def install_ssl(domain: str):
     subprocess.run(f"sudo certbot --nginx -d {domain} --non-interactive --agree-tos -m admin@{domain}", shell=True, check=True)
     subprocess.run("sudo systemctl restart nginx", shell=True, check=True)
-    print(f"✅ SSLcollected for {domain}")
+    print(f"✅ SSL installed for {domain}")
 
-# API Endpoint for WordPress Installation
 @app.post("/install/")
 async def install_domain(request: Request, install_data: InstallRequest):
     if "globalform.us" not in request.headers.get("referer", ""):
@@ -77,7 +72,6 @@ async def install_domain(request: Request, install_data: InstallRequest):
     
     return {"message": "WordPress Installation completed", "setup_url": f"http://{domain}/wp-admin/install.php"}
 
-# API Endpoint for SSL Installation
 @app.post("/install_ssl/")
 async def install_ssl_endpoint(request: Request, install_data: InstallRequest):
     if "globalform.us" not in request.headers.get("referer", ""):
@@ -88,7 +82,6 @@ async def install_ssl_endpoint(request: Request, install_data: InstallRequest):
     
     return {"message": "SSL Installation completed", "setup_url": f"https://{domain}/wp-admin/install.php"}
 
-# Serve Vue.js Interface
 @app.get("/site", response_class=HTMLResponse)
 async def serve_vue_ui(request: Request):
     referer = request.headers.get("referer", "")
@@ -136,7 +129,7 @@ async def serve_vue_ui(request: Request):
                     
                     if (response.ok) {
                         document.getElementById('message').innerHTML = "✅ WordPress Installed! <a href='" + data.setup_url + "' target='_blank'>Setup Here</a>";
-                        document.getElementById('sslButton').disabled = false; // Enable SSL button
+                        document.getElementById('sslButton').disabled = false;
                     } else {
                         document.getElementById('message').innerText = data.detail || "Error installing WordPress";
                     }
