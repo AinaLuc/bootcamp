@@ -68,7 +68,7 @@ def install_ssl(domain: str):
 # API Endpoint for WordPress Installation
 @app.post("/install/")
 async def install_domain(request: Request, install_data: InstallRequest):
-    if "lumentrade.us" not in request.headers.get("referer", ""):
+    if "globaltrade.us" not in request.headers.get("referer", ""):
         raise HTTPException(status_code=403, detail="Access Denied")
     
     domain = install_data.domain
