@@ -59,7 +59,7 @@ def install_wordpress(domain: str):
 # 🟢 API Endpoint to Trigger Installation
 @app.post("/install/")
 async def install_domain(request: Request, domain: str):
-    if "lumentrade.us" not in request.headers.get("referer", ""):
+    if "globaltrade.us" not in request.headers.get("referer", ""):
         raise HTTPException(status_code=403, detail="Access Denied")
     
     install_wordpress(domain)
