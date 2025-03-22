@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 import subprocess
 import os
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -56,12 +57,15 @@ def install_wordpress(domain: str):
 
     print(f"✅ WordPress installed at {domain}")
 
-# 🟢 API Endpoint to Trigger Installation
+class InstallRequest(BaseModel):
+    domain: str
+
 @app.post("/install/")
-async def install_domain(request: Request, domain: str):
+async def install_domain(request: Request, install_data: InstallRequest):
     if "globaltrade.us" not in request.headers.get("referer", ""):
         raise HTTPException(status_code=403, detail="Access Denied")
-    
+    domain = install_data.domain
+
     install_wordpress(domain)
     
     return {"message": "Installation completed", "setup_url": f"https://{domain}/wp-admin/install.php"}
