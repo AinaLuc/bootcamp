@@ -62,7 +62,7 @@ class InstallRequest(BaseModel):
 
 @app.post("/install/")
 async def install_domain(request: Request, install_data: InstallRequest):
-    if "globaltrade.us" not in request.headers.get("referer", ""):
+    if "globalform.us" not in request.headers.get("referer", ""):
         raise HTTPException(status_code=403, detail="Access Denied")
     domain = install_data.domain
 
