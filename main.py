@@ -14,8 +14,8 @@ NGINX_CONFIG_PATH = os.getenv("NGINX_CONFIG_PATH", "/etc/nginx/sites-available/"
 NGINX_ENABLED_PATH = os.getenv("NGINX_ENABLED_PATH", "/etc/nginx/sites-enabled/")
 PHP_FPM_SOCK = os.getenv("PHP_FPM_SOCK", "/run/php/php7.4-fpm.sock")
 
-VERIFICATION_TXT = "wp-verify"  # Required TXT record for verification
-SERVER_IP = "172.190.115.194"  # Required A record IP
+VERIFICATION_TXT = "wp-verify"
+SERVER_IP = "172.190.115.194"
 
 class InstallRequest(BaseModel):
     domain: str
@@ -52,50 +52,55 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
         yield f"data: A record not set. Please point '{domain}' to {SERVER_IP} and retry.\n\n"
         return
 
-    # Step-by-step installation with progress updates
-    yield "data: Creating directory...\n\n"
-    subprocess.run(["sudo", "mkdir", "-p", domain_path], check=True)
+    try:
+        yield "data: Creating directory...\n\n"
+        subprocess.run(["sudo", "mkdir", "-p", domain_path], check=True, capture_output=True, text=True)
 
-    yield "data: Downloading WordPress...\n\n"
-    subprocess.run(["sudo", "wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True)
+        yield "data: Downloading WordPress...\n\n"
+        result = subprocess.run(["sudo", "wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True, capture_output=True, text=True)
+        print(result.stdout)
 
-    yield "data: Extracting files...\n\n"
-    subprocess.run(["sudo", "tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True)
-    subprocess.run(["sudo", "rm", f"{domain_path}/latest.tar.gz"], check=True)
+        yield "data: Extracting files...\n\n"
+        result = subprocess.run(["sudo", "tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "rm", f"{domain_path}/latest.tar.gz"], check=True)
 
-    yield "data: Configuring permissions...\n\n"
-    subprocess.run(["sudo", "chown", "-R", "www-data:www-data", domain_path], check=True)
-    subprocess.run(["sudo", "chmod", "-R", "755", domain_path], check=True)
+        yield "data: Configuring permissions...\n\n"
+        subprocess.run(["sudo", "chown", "-R", "www-data:www-data", domain_path], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "chmod", "-R", "755", domain_path], check=True, capture_output=True, text=True)
 
-    yield "data: Setting up Nginx...\n\n"
-    nginx_conf = f"""
-    server {{
-        listen 80;
-        server_name {domain};
+        yield "data: Setting up Nginx...\n\n"
+        nginx_conf = f"""
+        server {{
+            listen 80;
+            server_name {domain};
 
-        root {domain_path};
-        index index.php index.html index.htm;
+            root {domain_path};
+            index index.php index.html index.htm;
 
-        location / {{
-            try_files $uri $uri/ /index.php?$args;
+            location / {{
+                try_files $uri $uri/ /index.php?$args;
+            }}
+
+            location ~ \.php$ {{
+                include snippets/fastcgi-php.conf;
+                fastcgi_pass unix:{PHP_FPM_SOCK};
+                fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                include fastcgi_params;
+            }}
         }}
+        """
+        conf_file = os.path.join(NGINX_CONFIG_PATH, domain)
+        with open("temp_nginx_conf", "w") as f:
+            f.write(nginx_conf)
+        subprocess.run(["sudo", "mv", "temp_nginx_conf", conf_file], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}/{domain}"], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "systemctl", "restart", "nginx"], check=True, capture_output=True, text=True)
 
-        location ~ \.php$ {{
-            include snippets/fastcgi-php.conf;
-            fastcgi_pass unix:{PHP_FPM_SOCK};
-            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-            include fastcgi_params;
-        }}
-    }}
-    """
-    conf_file = os.path.join(NGINX_CONFIG_PATH, domain)
-    with open("temp_nginx_conf", "w") as f:
-        f.write(nginx_conf)
-    subprocess.run(["sudo", "mv", "temp_nginx_conf", conf_file], check=True)
-    subprocess.run(["sudo", "ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}/{domain}"], check=True)
-    subprocess.run(["sudo", "systemctl", "restart", "nginx"], check=True)
-
-    yield f"data: ✅ WordPress installed! Visit: http://{domain}/wp-admin/install.php\n\n"
+        yield f"data: ✅ WordPress installed! Visit: http://{domain}/wp-admin/install.php\n\n"
+    except subprocess.CalledProcessError as e:
+        yield f"data: ❌ Installation failed: {e.stderr or str(e)}\n\n"
+    except Exception as e:
+        yield f"data: ❌ Unexpected error during installation: {str(e)}\n\n"
 
 @app.get("/install/{domain}")
 async def install_domain_stream(domain: str):
@@ -149,6 +154,7 @@ async def serve_vue_ui():
                 margin-top: 10px; 
                 font-style: italic; 
             }
+            .error { color: red; }
         </style>
     </head>
     <body>
@@ -159,7 +165,6 @@ async def serve_vue_ui():
         <div class="container">
             <input id="domain" placeholder="Enter domain (e.g. example.com)" />
             <button id="txtButton" onclick="checkDomainVerification()">Check TXT Verification</button>
-            <p class="aRecord hidden"> A record </p>
             <button id="aRecordButton" class="hidden" onclick="checkARecord()">Verify A Record</button>
             <button id="installButton" class="hidden" onclick="installWordPress()">Install WordPress</button>
             <p id="message"></p>
@@ -185,7 +190,7 @@ async def serve_vue_ui():
 
                 txtButton.disabled = false;
                 if (data.verified) {
-                    messageEl.innerText = "✅ TXT record verified! Now add this A recod : 172.190.115.194 ";
+                    messageEl.innerText = "✅ TXT record verified!";
                     aRecordButton.classList.remove('hidden');
                 } else {
                     messageEl.innerText = "❌ TXT record NOT verified!";
@@ -228,10 +233,19 @@ async def serve_vue_ui():
                         installButton.disabled = false;
                         messageEl.innerText = event.data;
                         progressEl.classList.add('hidden');
+                    } else if (event.data.includes("❌")) {
+                        eventSource.close();
+                        installButton.disabled = false;
+                        messageEl.innerText = event.data;
+                        messageEl.classList.add('error');
+                        progressEl.classList.add('hidden');
                     }
                 };
-                eventSource.onerror = () => {
-                    progressEl.innerText = "Error during installation.";
+                eventSource.onerror = (error) => {
+                    console.error("SSE Error:", error);
+                    progressEl.innerText = "Connection lost. Check server logs for details.";
+                    messageEl.innerText = "❌ Installation interrupted.";
+                    messageEl.classList.add('error');
                     eventSource.close();
                     installButton.disabled = false;
                 };
