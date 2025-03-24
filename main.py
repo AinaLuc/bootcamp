@@ -5,6 +5,18 @@ import subprocess
 import os
 import asyncio
 from typing import AsyncGenerator
+import logging
+
+# Set up logging to file and console
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("install.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -23,22 +35,24 @@ class InstallRequest(BaseModel):
 def check_txt_record(domain: str) -> bool:
     try:
         result = subprocess.run(["dig", "+short", "TXT", domain], capture_output=True, text=True)
+        logger.info(f"TXT check for {domain}: {result.stdout}")
         return VERIFICATION_TXT in result.stdout
     except Exception as e:
-        print(f"Error checking TXT record: {e}")
+        logger.error(f"Error checking TXT record for {domain}: {e}")
         return False
 
 def check_a_record(domain: str) -> bool:
     try:
         result = subprocess.run(["dig", "+short", domain], capture_output=True, text=True)
+        logger.info(f"A record check for {domain}: {result.stdout}")
         return SERVER_IP in result.stdout.strip().split("\n")
     except Exception as e:
-        print(f"Error checking A record: {e}")
+        logger.error(f"Error checking A record for {domain}: {e}")
         return False
 
 async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
-    """Installs WordPress with progress updates via SSE."""
     domain_path = os.path.join(WORDPRESS_DIR, domain)
+    logger.info(f"Starting installation for {domain} at {domain_path}")
 
     if os.path.exists(domain_path):
         yield "data: Domain already installed.\n\n"
@@ -54,19 +68,23 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
 
     try:
         yield "data: Creating directory...\n\n"
-        subprocess.run(["sudo", "mkdir", "-p", domain_path], check=True, capture_output=True, text=True)
+        result = subprocess.run(["sudo", "mkdir", "-p", domain_path], check=True, capture_output=True, text=True)
+        logger.info(f"Directory created: {result.stdout}")
 
         yield "data: Downloading WordPress...\n\n"
         result = subprocess.run(["sudo", "wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True, capture_output=True, text=True)
-        print(result.stdout)
+        logger.info(f"Download completed: {result.stdout}")
 
         yield "data: Extracting files...\n\n"
         result = subprocess.run(["sudo", "tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True, capture_output=True, text=True)
-        subprocess.run(["sudo", "rm", f"{domain_path}/latest.tar.gz"], check=True)
+        logger.info(f"Extraction completed: {result.stdout}")
+        subprocess.run(["sudo", "rm", f"{domain_path}/latest.tar.gz"], check=True, capture_output=True, text=True)
+        logger.info("Temporary tar file removed")
 
         yield "data: Configuring permissions...\n\n"
         subprocess.run(["sudo", "chown", "-R", "www-data:www-data", domain_path], check=True, capture_output=True, text=True)
         subprocess.run(["sudo", "chmod", "-R", "755", domain_path], check=True, capture_output=True, text=True)
+        logger.info("Permissions configured")
 
         yield "data: Setting up Nginx...\n\n"
         nginx_conf = f"""
@@ -95,12 +113,18 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
         subprocess.run(["sudo", "mv", "temp_nginx_conf", conf_file], check=True, capture_output=True, text=True)
         subprocess.run(["sudo", "ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}/{domain}"], check=True, capture_output=True, text=True)
         subprocess.run(["sudo", "systemctl", "restart", "nginx"], check=True, capture_output=True, text=True)
+        logger.info("Nginx configured and restarted")
 
         yield f"data: ✅ WordPress installed! Visit: http://{domain}/wp-admin/install.php\n\n"
     except subprocess.CalledProcessError as e:
-        yield f"data: ❌ Installation failed: {e.stderr or str(e)}\n\n"
+        error_msg = e.stderr or str(e)
+        logger.error(f"Subprocess error: {error_msg}")
+        yield f"data: ❌ Installation failed: {error_msg}\n\n"
     except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
         yield f"data: ❌ Unexpected error during installation: {str(e)}\n\n"
+    finally:
+        logger.info(f"Installation stream for {domain} ended")
 
 @app.get("/install/{domain}")
 async def install_domain_stream(domain: str):
@@ -248,6 +272,9 @@ async def serve_vue_ui():
                     messageEl.classList.add('error');
                     eventSource.close();
                     installButton.disabled = false;
+                };
+                eventSource.onopen = () => {
+                    console.log("SSE connection opened");
                 };
             }
         </script>
