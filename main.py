@@ -126,26 +126,26 @@ async def check_domain_a_record(domain: str):
     return {"a_record_correct": check_a_record(domain)}
 
 @app.get("/site", response_class=HTMLResponse)
-async def serve_vue_ui(request: Request):
-    vue_template = f""" <!DOCTYPE html>
+async def serve_vue_ui():
+    vue_template = """<!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>WordPress Installer</title>
         <style>
-            body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }}
-            input, button {{ padding: 10px; margin: 5px; width: 300px; }}
-            button {{ background-color: blue; color: white; border: none; cursor: pointer; }}
-            .error {{ color: red; }}
-            .disabled {{ background-color: gray; cursor: not-allowed; }}
+            body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+            input, button { padding: 10px; margin: 5px; width: 300px; }
+            button { background-color: blue; color: white; border: none; cursor: pointer; }
+            .error { color: red; }
+            .disabled { background-color: gray; cursor: not-allowed; }
         </style>
     </head>
     <body>
         <h2>Install WordPress</h2>
         <p>1️⃣ Add the following TXT record to your DNS:</p>
-        <pre>{VERIFICATION_TXT}</pre>
-        
+        <pre>wp-verify</pre>
+
         <input id="domain" placeholder="Enter domain (e.g. example.com)" />
         <button onclick="checkDomainVerification()">Check TXT Verification</button>
         <button onclick="checkARecord()" id="aRecordButton" disabled>Verify A Record</button>
@@ -158,7 +158,7 @@ async def serve_vue_ui(request: Request):
 
             async function checkDomainVerification() {
                 let domain = document.getElementById('domain').value;
-                if (!domain) return alert("Enter a domain!");
+                if (!domain) { alert("Enter a domain!"); return; }
 
                 let response = await fetch(`/is_verified/${domain}`);
                 let data = await response.json();
@@ -174,7 +174,7 @@ async def serve_vue_ui(request: Request):
 
             async function checkARecord() {
                 let domain = document.getElementById('domain').value;
-                if (!domain) return alert("Enter a domain!");
+                if (!domain) { alert("Enter a domain!"); return; }
 
                 let response = await fetch(`/is_a_record_correct/${domain}`);
                 let data = await response.json();
@@ -184,23 +184,24 @@ async def serve_vue_ui(request: Request):
                     isARecordVerified = true;
                     document.getElementById('installButton').disabled = false;
                 } else {
-                    document.getElementById('message').innerText = `❌ A record incorrect! Set it to {SERVER_IP}`;
+                    document.getElementById('message').innerText = "❌ A record incorrect! Set it to 172.190.115.194";
                 }
             }
 
             async function installWordPress() {
                 let domain = document.getElementById('domain').value;
-                if (!domain) return alert("Enter a domain!");
+                if (!domain) { alert("Enter a domain!"); return; }
 
-                let response = await fetch('/install/', {{
+                let response = await fetch('/install/', {
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ domain }})
-                }});
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain })
+                });
                 let data = await response.json();
                 document.getElementById('message').innerText = response.ok ? "✅ WordPress Installed!" : data.detail;
             }
         </script>
     </body>
     </html>"""
+    
     return HTMLResponse(content=vue_template)
