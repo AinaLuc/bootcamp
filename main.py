@@ -103,25 +103,24 @@ async def check_domain_verification(domain: str):
 
 @app.get("/site", response_class=HTMLResponse)
 async def serve_vue_ui(request: Request):
-    vue_template = f"""
-    <!DOCTYPE html>
+    vue_template = """ <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>WordPress Installer</title>
         <style>
-            body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }}
-            input, button {{ padding: 10px; margin: 5px; width: 300px; }}
-            button {{ background-color: blue; color: white; border: none; cursor: pointer; }}
-            .error {{ color: red; }}
-            .disabled {{ background-color: gray; cursor: not-allowed; }}
+            body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+            input, button { padding: 10px; margin: 5px; width: 300px; }
+            button { background-color: blue; color: white; border: none; cursor: pointer; }
+            .error { color: red; }
+            .disabled { background-color: gray; cursor: not-allowed; }
         </style>
     </head>
     <body>
         <h2>Install WordPress</h2>
         <p>To verify your domain, add the following TXT record to your DNS settings:</p>
-        <pre>{VERIFICATION_TXT}</pre>
+        <pre>wp-verify</pre>
         <input id="domain" placeholder="Enter domain (e.g. example.com)" />
         <button onclick="checkDomainVerification()">Check Verification</button>
         <button onclick="installWordPress()" id="installButton" disabled>Install WordPress</button>
@@ -129,43 +128,43 @@ async def serve_vue_ui(request: Request):
 
         <script>
             async function checkDomainVerification() {
-                const domain = document.getElementById('domain').value;
-                if (!domain) {{
+                let domain = document.getElementById('domain').value;
+                if (!domain) {
                     document.getElementById('message').innerText = "Enter a domain!";
                     return;
-                }}
+                }
 
-                let response = await fetch(`/is_verified/${{domain}}`);
+                let response = await fetch(`/is_verified/${domain}`);
                 let data = await response.json();
 
-                if (data.verified) {{
+                if (data.verified) {
                     document.getElementById('message').innerText = "✅ Domain is verified!";
                     document.getElementById('installButton').disabled = false;
-                }} else {{
+                } else {
                     document.getElementById('message').innerText = "❌ Domain is NOT verified! Add the TXT record and retry.";
                     document.getElementById('installButton').disabled = true;
-                }}
+                }
             }
 
             async function installWordPress() {
-                const domain = document.getElementById('domain').value;
-                if (!domain) {{
+                let domain = document.getElementById('domain').value;
+                if (!domain) {
                     document.getElementById('message').innerText = "Enter a domain!";
                     return;
-                }}
+                }
 
-                let response = await fetch('/install/', {{
+                let response = await fetch('/install/', {
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ domain }})
-                }});
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain })
+                });
                 let data = await response.json();
 
-                if (response.ok) {{
-                    document.getElementById('message').innerHTML = `✅ WordPress Installed! <a href='${{data.setup_url}}' target='_blank'>Setup Here</a><br>⚠️ Add A record: {SERVER_IP}`;
-                }} else {{
+                if (response.ok) {
+                    document.getElementById('message').innerHTML = `✅ WordPress Installed! <a href='${data.setup_url}' target='_blank'>Setup Here</a><br>⚠️ Add A record: 172.190.115.194`;
+                } else {
                     document.getElementById('message').innerText = data.detail || "Error installing WordPress";
-                }}
+                }
             }
         </script>
     </body>
