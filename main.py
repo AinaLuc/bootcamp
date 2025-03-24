@@ -9,17 +9,13 @@ import logging
 import sys
 
 # Set up logging with immediate flushing
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("install.log"),
-        logging.StreamHandler(sys.stdout)
-    ],
-    force=True
-)
 logger = logging.getLogger(__name__)
-logger.handlers[0].stream.flush = sys.stdout.flush  # Ensure immediate output
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+handler.stream.flush = sys.stdout.flush  # Ensure immediate output
+logger.addHandler(handler)
+logger.addHandler(logging.FileHandler("install.log"))
+logger.setLevel(logging.INFO)
 
 app = FastAPI()
 
@@ -114,7 +110,7 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
                 try_files $uri $uri/ /index.php?$args;
             }}
 
-            location ~ \.php$ %%
+            location ~ \.php$ {{
                 include snippets/fastcgi-php.conf;
                 fastcgi_pass unix:{PHP_FPM_SOCK};
                 fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
