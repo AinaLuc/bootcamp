@@ -12,7 +12,7 @@ import sys
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-handler.stream.flush = sys.stdout.flush  # Ensure immediate output
+handler.stream.flush = sys.stdout.flush
 logger.addHandler(handler)
 logger.addHandler(logging.FileHandler("install.log"))
 logger.setLevel(logging.INFO)
@@ -54,46 +54,56 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
     logger.info(f"Starting installation for {domain} at {domain_path}")
 
     if os.path.exists(domain_path):
+        logger.info(f"Directory {domain_path} already exists")
         yield "data: Domain already installed.\n\n"
         return
 
     if not check_txt_record(domain):
+        logger.info(f"TXT record verification failed for {domain}")
         yield f"data: Domain is not verified. Add TXT record '{VERIFICATION_TXT}' and retry.\n\n"
         return
 
     if not check_a_record(domain):
+        logger.info(f"A record verification failed for {domain}")
         yield f"data: A record not set. Please point '{domain}' to {SERVER_IP} and retry.\n\n"
         return
 
     try:
-        # Check directory permissions before creating
+        # Pre-checks
         parent_dir = os.path.dirname(domain_path)
+        logger.info(f"Checking write access to {parent_dir}")
+        yield "data: Checking directory permissions...\n\n"
+        if not os.path.exists(parent_dir):
+            logger.error(f"Parent directory {parent_dir} does not exist")
+            yield f"data: ❌ Parent directory {parent_dir} does not exist\n\n"
+            return
         if not os.access(parent_dir, os.W_OK):
+            logger.error(f"No write access to {parent_dir}")
             yield f"data: ❌ Cannot write to {parent_dir}. Check permissions.\n\n"
-            logger.error(f"Cannot write to {parent_dir}")
             return
 
+        # Directory creation
         yield "data: Creating directory...\n\n"
-        logger.info("Attempting to create directory")
-        result = subprocess.run(["sudo", "mkdir", "-p", domain_path], check=True, capture_output=True, text=True)
+        logger.info("Attempting to create directory with sudo mkdir")
+        result = subprocess.run(["sudo", "-n", "mkdir", "-p", domain_path], check=True, capture_output=True, text=True)
         logger.info(f"Directory created: {result.stdout}")
 
         yield "data: Downloading WordPress...\n\n"
         logger.info("Starting WordPress download")
-        result = subprocess.run(["sudo", "wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True, capture_output=True, text=True)
+        result = subprocess.run(["sudo", "-n", "wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True, capture_output=True, text=True)
         logger.info(f"Download completed: {result.stdout}")
 
         yield "data: Extracting files...\n\n"
         logger.info("Extracting files")
-        result = subprocess.run(["sudo", "tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True, capture_output=True, text=True)
+        result = subprocess.run(["sudo", "-n", "tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True, capture_output=True, text=True)
         logger.info(f"Extraction completed: {result.stdout}")
-        subprocess.run(["sudo", "rm", f"{domain_path}/latest.tar.gz"], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "-n", "rm", f"{domain_path}/latest.tar.gz"], check=True, capture_output=True, text=True)
         logger.info("Temporary tar file removed")
 
         yield "data: Configuring permissions...\n\n"
         logger.info("Configuring permissions")
-        subprocess.run(["sudo", "chown", "-R", "www-data:www-data", domain_path], check=True, capture_output=True, text=True)
-        subprocess.run(["sudo", "chmod", "-R", "755", domain_path], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "-n", "chown", "-R", "www-data:www-data", domain_path], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "-n", "chmod", "-R", "755", domain_path], check=True, capture_output=True, text=True)
         logger.info("Permissions configured")
 
         yield "data: Setting up Nginx...\n\n"
@@ -121,9 +131,9 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
         conf_file = os.path.join(NGINX_CONFIG_PATH, domain)
         with open("temp_nginx_conf", "w") as f:
             f.write(nginx_conf)
-        subprocess.run(["sudo", "mv", "temp_nginx_conf", conf_file], check=True, capture_output=True, text=True)
-        subprocess.run(["sudo", "ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}/{domain}"], check=True, capture_output=True, text=True)
-        subprocess.run(["sudo", "systemctl", "restart", "nginx"], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "-n", "mv", "temp_nginx_conf", conf_file], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "-n", "ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}/{domain}"], check=True, capture_output=True, text=True)
+        subprocess.run(["sudo", "-n", "systemctl", "restart", "nginx"], check=True, capture_output=True, text=True)
         logger.info("Nginx configured and restarted")
 
         yield f"data: ✅ WordPress installed! Visit: http://{domain}/wp-admin/install.php\n\n"
