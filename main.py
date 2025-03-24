@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 import subprocess
 import os
+import asyncio
+from typing import AsyncGenerator
 
 app = FastAPI()
 
@@ -19,7 +21,6 @@ class InstallRequest(BaseModel):
     domain: str
 
 def check_txt_record(domain: str) -> bool:
-    """Check if the domain has the required TXT record."""
     try:
         result = subprocess.run(["dig", "+short", "TXT", domain], capture_output=True, text=True)
         return VERIFICATION_TXT in result.stdout
@@ -28,7 +29,6 @@ def check_txt_record(domain: str) -> bool:
         return False
 
 def check_a_record(domain: str) -> bool:
-    """Check if the domain A record points to the required IP."""
     try:
         result = subprocess.run(["dig", "+short", domain], capture_output=True, text=True)
         return SERVER_IP in result.stdout.strip().split("\n")
@@ -36,36 +36,38 @@ def check_a_record(domain: str) -> bool:
         print(f"Error checking A record: {e}")
         return False
 
-def install_wordpress(domain: str):
-    """Installs WordPress for a given domain if verified."""
+async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
+    """Installs WordPress with progress updates via SSE."""
     domain_path = os.path.join(WORDPRESS_DIR, domain)
 
     if os.path.exists(domain_path):
-        raise HTTPException(status_code=400, detail="Domain already installed.")
+        yield "data: Domain already installed.\n\n"
+        return
 
     if not check_txt_record(domain):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Domain is not verified. Add TXT record '{VERIFICATION_TXT}' and retry."
-        )
+        yield f"data: Domain is not verified. Add TXT record '{VERIFICATION_TXT}' and retry.\n\n"
+        return
 
     if not check_a_record(domain):
-        raise HTTPException(
-            status_code=400,
-            detail=f"A record not set. Please point '{domain}' to {SERVER_IP} and retry."
-        )
+        yield f"data: A record not set. Please point '{domain}' to {SERVER_IP} and retry.\n\n"
+        return
 
-    # Create directory and install WordPress
-    os.makedirs(domain_path, exist_ok=True)
-    subprocess.run(["wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True)
-    subprocess.run(["tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True)
-    os.remove(f"{domain_path}/latest.tar.gz")
+    # Step-by-step installation with progress updates
+    yield "data: Creating directory...\n\n"
+    subprocess.run(["sudo", "mkdir", "-p", domain_path], check=True)
 
-    # Set correct permissions
-    subprocess.run(["chown", "-R", "www-data:www-data", domain_path], check=True)
-    subprocess.run(["chmod", "-R", "755", domain_path], check=True)
+    yield "data: Downloading WordPress...\n\n"
+    subprocess.run(["sudo", "wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True)
 
-    # Generate Nginx Configuration
+    yield "data: Extracting files...\n\n"
+    subprocess.run(["sudo", "tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True)
+    subprocess.run(["sudo", "rm", f"{domain_path}/latest.tar.gz"], check=True)
+
+    yield "data: Configuring permissions...\n\n"
+    subprocess.run(["sudo", "chown", "-R", "www-data:www-data", domain_path], check=True)
+    subprocess.run(["sudo", "chmod", "-R", "755", domain_path], check=True)
+
+    yield "data: Setting up Nginx...\n\n"
     nginx_conf = f"""
     server {{
         listen 80;
@@ -86,43 +88,25 @@ def install_wordpress(domain: str):
         }}
     }}
     """
-
     conf_file = os.path.join(NGINX_CONFIG_PATH, domain)
-    with open(conf_file, "w") as f:
+    with open("temp_nginx_conf", "w") as f:
         f.write(nginx_conf)
+    subprocess.run(["sudo", "mv", "temp_nginx_conf", conf_file], check=True)
+    subprocess.run(["sudo", "ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}/{domain}"], check=True)
+    subprocess.run(["sudo", "systemctl", "restart", "nginx"], check=True)
 
-    subprocess.run(["ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}{domain}"], check=True)
-    subprocess.run(["systemctl", "restart", "nginx"], check=True)
+    yield f"data: ✅ WordPress installed! Visit: http://{domain}/wp-admin/install.php\n\n"
 
-@app.post("/install/")
-async def install_domain(install_data: InstallRequest):
-    if not check_txt_record(install_data.domain):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Domain is not verified. Add TXT record '{VERIFICATION_TXT}' and retry."
-        )
-
-    if not check_a_record(install_data.domain):
-        raise HTTPException(
-            status_code=400,
-            detail=f"A record not set. Please point '{install_data.domain}' to {SERVER_IP} and retry."
-        )
-
-    install_wordpress(install_data.domain)
-    return {
-        "message": "WordPress installation completed",
-        "setup_url": f"http://{install_data.domain}/wp-admin/install.php",
-        "next_step": f"Ensure A record points to {SERVER_IP}."
-    }
+@app.get("/install/{domain}")
+async def install_domain_stream(domain: str):
+    return StreamingResponse(install_wordpress_stream(domain), media_type="text/event-stream")
 
 @app.get("/is_verified/{domain}")
 async def check_domain_verification(domain: str):
-    """Check if domain has the required TXT record."""
     return {"verified": check_txt_record(domain)}
 
 @app.get("/is_a_record_correct/{domain}")
 async def check_domain_a_record(domain: str):
-    """Check if domain A record is correctly set."""
     return {"a_record_correct": check_a_record(domain)}
 
 @app.get("/site", response_class=HTMLResponse)
@@ -134,11 +118,37 @@ async def serve_vue_ui():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>WordPress Installer</title>
         <style>
-            body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-            input, button { padding: 10px; margin: 5px; width: 300px; }
-            button { background-color: blue; color: white; border: none; cursor: pointer; }
-            .error { color: red; }
-            .disabled { background-color: gray; cursor: not-allowed; }
+            body { 
+                font-family: Arial, sans-serif; 
+                text-align: center; 
+                margin-top: 50px; 
+            }
+            .container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 10px;
+            }
+            input, button { 
+                padding: 10px; 
+                width: 300px; 
+                box-sizing: border-box;
+            }
+            button { 
+                background-color: blue; 
+                color: white; 
+                border: none; 
+                cursor: pointer; 
+            }
+            button:disabled { 
+                background-color: gray; 
+                cursor: not-allowed; 
+            }
+            .hidden { display: none; }
+            .progress { 
+                margin-top: 10px; 
+                font-style: italic; 
+            }
         </style>
     </head>
     <body>
@@ -146,29 +156,38 @@ async def serve_vue_ui():
         <p>1️⃣ Add the following TXT record to your DNS:</p>
         <pre>wp-verify</pre>
 
-        <input id="domain" placeholder="Enter domain (e.g. example.com)" />
-        <button onclick="checkDomainVerification()">Check TXT Verification</button>
-        <button onclick="checkARecord()" id="aRecordButton" disabled>Verify A Record</button>
-        <button onclick="installWordPress()" id="installButton" disabled>Install WordPress</button>
-        <p id="message"></p>
+        <div class="container">
+            <input id="domain" placeholder="Enter domain (e.g. example.com)" />
+            <button id="txtButton" onclick="checkDomainVerification()">Check TXT Verification</button>
+            <button id="aRecordButton" class="hidden" onclick="checkARecord()">Verify A Record</button>
+            <button id="installButton" class="hidden" onclick="installWordPress()">Install WordPress</button>
+            <p id="message"></p>
+            <p id="progress" class="progress hidden"></p>
+        </div>
 
         <script>
-            let isTxtVerified = false;
-            let isARecordVerified = false;
+            const messageEl = document.getElementById('message');
+            const progressEl = document.getElementById('progress');
+            const txtButton = document.getElementById('txtButton');
+            const aRecordButton = document.getElementById('aRecordButton');
+            const installButton = document.getElementById('installButton');
 
             async function checkDomainVerification() {
                 let domain = document.getElementById('domain').value;
                 if (!domain) { alert("Enter a domain!"); return; }
 
+                txtButton.disabled = true;
+                messageEl.innerText = "Checking TXT record...";
+                
                 let response = await fetch(`/is_verified/${domain}`);
                 let data = await response.json();
 
+                txtButton.disabled = false;
                 if (data.verified) {
-                    document.getElementById('message').innerText = "✅ TXT record verified!";
-                    isTxtVerified = true;
-                    document.getElementById('aRecordButton').disabled = false;
+                    messageEl.innerText = "✅ TXT record verified!";
+                    aRecordButton.classList.remove('hidden');
                 } else {
-                    document.getElementById('message').innerText = "❌ TXT record NOT verified!";
+                    messageEl.innerText = "❌ TXT record NOT verified!";
                 }
             }
 
@@ -176,32 +195,52 @@ async def serve_vue_ui():
                 let domain = document.getElementById('domain').value;
                 if (!domain) { alert("Enter a domain!"); return; }
 
+                aRecordButton.disabled = true;
+                messageEl.innerText = "Checking A record...";
+                
                 let response = await fetch(`/is_a_record_correct/${domain}`);
                 let data = await response.json();
 
+                aRecordButton.disabled = false;
                 if (data.a_record_correct) {
-                    document.getElementById('message').innerText = "✅ A record correctly set!";
-                    isARecordVerified = true;
-                    document.getElementById('installButton').disabled = false;
+                    messageEl.innerText = "✅ A record correctly set!";
+                    installButton.classList.remove('hidden');
                 } else {
-                    document.getElementById('message').innerText = "❌ A record incorrect! Set it to 172.190.115.194";
+                    messageEl.innerText = "❌ A record incorrect! Set it to 172.190.115.194";
                 }
             }
 
-            async function installWordPress() {
+            function installWordPress() {
                 let domain = document.getElementById('domain').value;
                 if (!domain) { alert("Enter a domain!"); return; }
 
-                let response = await fetch('/install/', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ domain })
-                });
-                let data = await response.json();
-                document.getElementById('message').innerText = response.ok ? "✅ WordPress Installed!" : data.detail;
+                installButton.disabled = true;
+                messageEl.innerText = "Starting WordPress installation...";
+                progressEl.classList.remove('hidden');
+                progressEl.innerText = "Initializing...";
+
+                const eventSource = new EventSource(`/install/${domain}`);
+                eventSource.onmessage = (event) => {
+                    progressEl.innerText = event.data;
+                    if (event.data.includes("✅ WordPress installed!")) {
+                        eventSource.close();
+                        installButton.disabled = false;
+                        messageEl.innerText = event.data;
+                        progressEl.classList.add('hidden');
+                    }
+                };
+                eventSource.onerror = () => {
+                    progressEl.innerText = "Error during installation.";
+                    eventSource.close();
+                    installButton.disabled = false;
+                };
             }
         </script>
     </body>
     </html>"""
     
     return HTMLResponse(content=vue_template)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
