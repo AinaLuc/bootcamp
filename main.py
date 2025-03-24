@@ -159,6 +159,7 @@ async def serve_vue_ui():
         <div class="container">
             <input id="domain" placeholder="Enter domain (e.g. example.com)" />
             <button id="txtButton" onclick="checkDomainVerification()">Check TXT Verification</button>
+            <p class="aRecord hidden"> A record </p>
             <button id="aRecordButton" class="hidden" onclick="checkARecord()">Verify A Record</button>
             <button id="installButton" class="hidden" onclick="installWordPress()">Install WordPress</button>
             <p id="message"></p>
@@ -184,7 +185,7 @@ async def serve_vue_ui():
 
                 txtButton.disabled = false;
                 if (data.verified) {
-                    messageEl.innerText = "✅ TXT record verified!";
+                    messageEl.innerText = "✅ TXT record verified! Now add this A recod : 172.190.115.194 ";
                     aRecordButton.classList.remove('hidden');
                 } else {
                     messageEl.innerText = "❌ TXT record NOT verified!";
