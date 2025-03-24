@@ -12,46 +12,45 @@ NGINX_CONFIG_PATH = os.getenv("NGINX_CONFIG_PATH", "/etc/nginx/sites-available/"
 NGINX_ENABLED_PATH = os.getenv("NGINX_ENABLED_PATH", "/etc/nginx/sites-enabled/")
 PHP_FPM_SOCK = os.getenv("PHP_FPM_SOCK", "/run/php/php7.4-fpm.sock")
 
-# Allowed Referrers
-ALLOWED_REFERRERS = ["globalform.us", "globaltrade.us"]
-
-# Mock function to check if a domain is verified
-def is_domain_verified(domain: str) -> bool:
-    # TODO: Replace with actual verification check (e.g., database lookup)
-    verified_domains = ["example.com", "verifiedsite.com"]
-    return domain in verified_domains
+VERIFICATION_TXT = "wp-verify"  # Required TXT record for verification
+SERVER_IP = "172.190.115.194"  # IP to be set in the A record
 
 class InstallRequest(BaseModel):
     domain: str
 
-def run_command(command):
-    """Execute shell command securely and handle errors."""
+def check_txt_record(domain: str) -> bool:
+    """Check if the domain has the required TXT record."""
     try:
-        subprocess.run(command, check=True, shell=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing command: {command}\n{e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        result = subprocess.run(
+            ["dig", "+short", "TXT", domain], capture_output=True, text=True
+        )
+        return VERIFICATION_TXT in result.stdout
+    except Exception as e:
+        print(f"Error checking TXT record: {e}")
+        return False
 
 def install_wordpress(domain: str):
-    """Installs WordPress for a given domain."""
+    """Installs WordPress for a given domain if verified."""
     domain_path = os.path.join(WORDPRESS_DIR, domain)
     
     if os.path.exists(domain_path):
-        print(f"⚠️ Domain {domain} already installed.")
-        return
-    
-    if not is_domain_verified(domain):
-        raise HTTPException(status_code=400, detail="Domain is not verified.")
+        raise HTTPException(status_code=400, detail="Domain already installed.")
 
-    # Create directory and download WordPress
-    run_command(f"sudo mkdir -p {domain_path}")
-    run_command(f"wget https://wordpress.org/latest.tar.gz -P {domain_path}")
-    run_command(f"tar -xzf {domain_path}/latest.tar.gz -C {domain_path} --strip-components=1")
-    run_command(f"rm {domain_path}/latest.tar.gz")
+    if not check_txt_record(domain):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Domain is not verified. Please add TXT record '{VERIFICATION_TXT}' to your domain DNS and retry."
+        )
+
+    # Create directory and install WordPress
+    os.makedirs(domain_path, exist_ok=True)
+    subprocess.run(["wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True)
+    subprocess.run(["tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True)
+    os.remove(f"{domain_path}/latest.tar.gz")
 
     # Set correct permissions
-    run_command(f"sudo chown -R www-data:www-data {domain_path}")
-    run_command(f"sudo chmod -R 755 {domain_path}")
+    subprocess.run(["chown", "-R", "www-data:www-data", domain_path], check=True)
+    subprocess.run(["chmod", "-R", "755", domain_path], check=True)
 
     # Generate Nginx Configuration
     nginx_conf = f"""
@@ -76,31 +75,35 @@ def install_wordpress(domain: str):
     """
 
     conf_file = os.path.join(NGINX_CONFIG_PATH, domain)
-    
     with open(conf_file, "w") as f:
         f.write(nginx_conf)
-    
-    run_command(f"sudo ln -sf {conf_file} {NGINX_ENABLED_PATH}{domain}")
-    run_command("sudo systemctl restart nginx")
-    
-    print(f"✅ WordPress installed at {domain}")
+
+    subprocess.run(["ln", "-sf", conf_file, f"{NGINX_ENABLED_PATH}{domain}"], check=True)
+    subprocess.run(["systemctl", "restart", "nginx"], check=True)
 
 @app.post("/install/")
-async def install_domain(request: Request, install_data: InstallRequest):
-    if not is_domain_verified(install_data.domain):
-        raise HTTPException(status_code=400, detail="Domain is not verified. Please verify your domain first.")
-    
+async def install_domain(install_data: InstallRequest):
+    if not check_txt_record(install_data.domain):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Domain is not verified. Add TXT record '{VERIFICATION_TXT}' and retry."
+        )
+
     install_wordpress(install_data.domain)
-    return {"message": "WordPress Installation completed", "setup_url": f"http://{install_data.domain}/wp-admin/install.php"}
+    return {
+        "message": "WordPress installation completed",
+        "setup_url": f"http://{install_data.domain}/wp-admin/install.php",
+        "next_step": f"Add A record {SERVER_IP} to your domain's DNS."
+    }
 
 @app.get("/is_verified/{domain}")
 async def check_domain_verification(domain: str):
-    """API Endpoint to check if a domain is verified."""
-    return {"verified": is_domain_verified(domain)}
+    """Check if domain has the required TXT record."""
+    return {"verified": check_txt_record(domain)}
 
 @app.get("/site", response_class=HTMLResponse)
 async def serve_vue_ui(request: Request):
-    vue_template = """
+    vue_template = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -108,15 +111,17 @@ async def serve_vue_ui(request: Request):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>WordPress Installer</title>
         <style>
-            body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-            input { padding: 10px; width: 300px; margin-bottom: 10px; }
-            button { padding: 10px; background-color: blue; color: white; border: none; cursor: pointer; margin: 5px; }
-            .error { color: red; }
-            .disabled { background-color: gray; cursor: not-allowed; }
+            body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }}
+            input, button {{ padding: 10px; margin: 5px; width: 300px; }}
+            button {{ background-color: blue; color: white; border: none; cursor: pointer; }}
+            .error {{ color: red; }}
+            .disabled {{ background-color: gray; cursor: not-allowed; }}
         </style>
     </head>
     <body>
         <h2>Install WordPress</h2>
+        <p>To verify your domain, add the following TXT record to your DNS settings:</p>
+        <pre>{VERIFICATION_TXT}</pre>
         <input id="domain" placeholder="Enter domain (e.g. example.com)" />
         <button onclick="checkDomainVerification()">Check Verification</button>
         <button onclick="installWordPress()" id="installButton" disabled>Install WordPress</button>
@@ -125,48 +130,42 @@ async def serve_vue_ui(request: Request):
         <script>
             async function checkDomainVerification() {
                 const domain = document.getElementById('domain').value;
-                if (!domain) {
+                if (!domain) {{
                     document.getElementById('message').innerText = "Enter a domain!";
                     return;
-                }
+                }}
 
-                let response = await fetch(`/is_verified/${domain}`);
+                let response = await fetch(`/is_verified/${{domain}}`);
                 let data = await response.json();
 
-                if (data.verified) {
+                if (data.verified) {{
                     document.getElementById('message').innerText = "✅ Domain is verified!";
                     document.getElementById('installButton').disabled = false;
-                    document.getElementById('installButton').classList.remove("disabled");
-                } else {
-                    document.getElementById('message').innerText = "❌ Domain is NOT verified!";
+                }} else {{
+                    document.getElementById('message').innerText = "❌ Domain is NOT verified! Add the TXT record and retry.";
                     document.getElementById('installButton').disabled = true;
-                    document.getElementById('installButton').classList.add("disabled");
-                }
+                }}
             }
 
             async function installWordPress() {
                 const domain = document.getElementById('domain').value;
-                if (!domain) {
+                if (!domain) {{
                     document.getElementById('message').innerText = "Enter a domain!";
                     return;
-                }
-                
-                try {
-                    let response = await fetch('/install/', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ domain })
-                    });
-                    let data = await response.json();
-                    
-                    if (response.ok) {
-                        document.getElementById('message').innerHTML = "✅ WordPress Installed! <a href='" + data.setup_url + "' target='_blank'>Setup Here</a>";
-                    } else {
-                        document.getElementById('message').innerText = data.detail || "Error installing WordPress";
-                    }
-                } catch (error) {
-                    document.getElementById('message').innerText = "Error installing WordPress";
-                }
+                }}
+
+                let response = await fetch('/install/', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ domain }})
+                }});
+                let data = await response.json();
+
+                if (response.ok) {{
+                    document.getElementById('message').innerHTML = `✅ WordPress Installed! <a href='${{data.setup_url}}' target='_blank'>Setup Here</a><br>⚠️ Add A record: {SERVER_IP}`;
+                }} else {{
+                    document.getElementById('message').innerText = data.detail || "Error installing WordPress";
+                }}
             }
         </script>
     </body>
