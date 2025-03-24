@@ -6,17 +6,20 @@ import os
 import asyncio
 from typing import AsyncGenerator
 import logging
+import sys
 
-# Set up logging to file and console
+# Set up logging with immediate flushing
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler("install.log"),
-        logging.StreamHandler()
-    ]
+        logging.StreamHandler(sys.stdout)
+    ],
+    force=True
 )
 logger = logging.getLogger(__name__)
+logger.handlers[0].stream.flush = sys.stdout.flush  # Ensure immediate output
 
 app = FastAPI()
 
@@ -67,26 +70,38 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
         return
 
     try:
+        # Check directory permissions before creating
+        parent_dir = os.path.dirname(domain_path)
+        if not os.access(parent_dir, os.W_OK):
+            yield f"data: ❌ Cannot write to {parent_dir}. Check permissions.\n\n"
+            logger.error(f"Cannot write to {parent_dir}")
+            return
+
         yield "data: Creating directory...\n\n"
+        logger.info("Attempting to create directory")
         result = subprocess.run(["sudo", "mkdir", "-p", domain_path], check=True, capture_output=True, text=True)
         logger.info(f"Directory created: {result.stdout}")
 
         yield "data: Downloading WordPress...\n\n"
+        logger.info("Starting WordPress download")
         result = subprocess.run(["sudo", "wget", "https://wordpress.org/latest.tar.gz", "-P", domain_path], check=True, capture_output=True, text=True)
         logger.info(f"Download completed: {result.stdout}")
 
         yield "data: Extracting files...\n\n"
+        logger.info("Extracting files")
         result = subprocess.run(["sudo", "tar", "-xzf", f"{domain_path}/latest.tar.gz", "-C", domain_path, "--strip-components=1"], check=True, capture_output=True, text=True)
         logger.info(f"Extraction completed: {result.stdout}")
         subprocess.run(["sudo", "rm", f"{domain_path}/latest.tar.gz"], check=True, capture_output=True, text=True)
         logger.info("Temporary tar file removed")
 
         yield "data: Configuring permissions...\n\n"
+        logger.info("Configuring permissions")
         subprocess.run(["sudo", "chown", "-R", "www-data:www-data", domain_path], check=True, capture_output=True, text=True)
         subprocess.run(["sudo", "chmod", "-R", "755", domain_path], check=True, capture_output=True, text=True)
         logger.info("Permissions configured")
 
         yield "data: Setting up Nginx...\n\n"
+        logger.info("Setting up Nginx")
         nginx_conf = f"""
         server {{
             listen 80;
@@ -99,7 +114,7 @@ async def install_wordpress_stream(domain: str) -> AsyncGenerator[str, None]:
                 try_files $uri $uri/ /index.php?$args;
             }}
 
-            location ~ \.php$ {{
+            location ~ \.php$ %%
                 include snippets/fastcgi-php.conf;
                 fastcgi_pass unix:{PHP_FPM_SOCK};
                 fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
@@ -252,6 +267,7 @@ async def serve_vue_ui():
                 const eventSource = new EventSource(`/install/${domain}`);
                 eventSource.onmessage = (event) => {
                     progressEl.innerText = event.data;
+                    console.log("SSE Message:", event.data);
                     if (event.data.includes("✅ WordPress installed!")) {
                         eventSource.close();
                         installButton.disabled = false;
